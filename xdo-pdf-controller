@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import logging
+import subprocess
+import time
+from textwrap import dedent
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib, Gdk
+
+
+class PresentationController(Gtk.Window):
+  """
+  Sends the left and right arrow key to multiple PDF viewers based on xdotool
+  and window titles.
+
+  Also increase a presentation timer prints the slide transition timing into
+  stdout. The slide number is tracked internally and can deviate from the
+  actual PDF viewers.
+
+  Also, do not press arrow keys in rapid succession, as you may race with
+  xdotool and accidentally transition a PDF viewer without noticing, causing
+  desync.
+  """
+  @classmethod
+  def main(cls):
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(description=dedent(cls.__doc__))
+    parser.add_argument("window_titles", nargs="*", default=["presentation.pdf", "presentation-notes.pdf"], help="a list of window titles to send keys to")
+    args = parser.parse_args()
+
+    window = cls(window_titles=args.window_titles)
+    window.connect("destroy", Gtk.main_quit)
+    window.show_all()
+    Gtk.main()
+
+  def __init__(self, window_titles=["presentation.pdf", "presentation-notes.pdf"]):
+    self.logger = logging.getLogger("xdo-pc")
+    self.title = "!Presentation Controller!"
+    self.window_titles = window_titles
+    self.window_ids = {}
+
+    self.start = time.time()
+    self.slide_num = 1
+    self.timer_id = None
+
+    super().__init__(title=self.title)
+
+    self.btn_next = Gtk.Button(label="Next")
+    self.btn_next.connect("clicked", self.on_nav_buttons_clicked)
+
+    self.btn_prev = Gtk.Button(label="Previous")
+    self.btn_prev.connect("clicked", self.on_nav_buttons_clicked)
+
+    self.btn_reset = Gtk.Button(label="Reset clock")
+    self.btn_reset.connect("clicked", self.on_btn_reset_clicked)
+
+    self.lbl_clock = Gtk.Label()
+
+    self.grid = Gtk.Grid(column_spacing=5, row_spacing=5)
+    self.grid.attach(self.btn_prev, 0, 0, 1, 1)
+    self.grid.attach(self.btn_next, 1, 0, 1, 1)
+    self.grid.attach(self.lbl_clock, 0, 1, 2, 1)
+    self.grid.attach(self.btn_reset, 0, 2, 2, 1)
+
+    self.add(self.grid)
+    self.connect("key-press-event", self.on_key_pressed)
+
+    self.reset_clock()
+    print("from#\tto#\ttime")
+
+  def on_nav_buttons_clicked(self, widget):
+    if widget == self.btn_next:
+      self.navigate(1)
+    elif widget == self.btn_prev:
+      self.navigate(-1)
+    else:
+      raise TypeError("{} should not be passed here".format(widget))
+
+  def on_btn_reset_clicked(self, _):
+    self.reset_clock()
+
+  def on_key_pressed(self, _, event):
+    if event.keyval == Gdk.KEY_Left:
+      self.navigate(-1)
+    elif event.keyval == Gdk.KEY_Right:
+      self.navigate(1)
+
+  def reset_clock(self):
+    self.logger.debug("resetting clock and slide num")
+    self.start = time.time()
+    self.slide_num = 1
+
+    if self.timer_id is not None: # Race condition? But whatever
+      GLib.source_remove(self.timer_id)
+      self.timer_id = None
+
+    self.clock_tick()
+
+  def clock_tick(self):
+    delta = round(time.time() - self.start)
+    delta = str(datetime.timedelta(seconds=delta))
+    self.lbl_clock.set_label("{} ({})".format(delta, self.slide_num))
+
+    if self.timer_id is not None: # Race condition? But whatever
+      GLib.source_remove(self.timer_id)
+      self.timer_id = None
+
+    self.timer_id = GLib.timeout_add(1000, self.clock_tick)
+
+  def navigate(self, direction):
+    key = "Right" if direction == 1 else "Left"
+
+    old_slide_num = self.slide_num
+    self.slide_num += direction
+    if self.slide_num < 1:
+      self.slide_num = 1
+
+    # This shows a nice highlight on the action taken around the button.
+    if direction == 1:
+      self.btn_next.grab_focus()
+    else:
+      self.btn_prev.grab_focus()
+
+    delta = str(datetime.timedelta(seconds=round(time.time() - self.start)))
+    print("{}\t{}\t{}".format(old_slide_num, self.slide_num, delta))
+
+    for title in self.window_titles:
+      self.logger.debug("sending key {} to window {}".format(key, title))
+      self.activate_window_and_send_key(title, key)
+
+    self.activate_window(self.title)
+    self.clock_tick()
+
+
+  def find_window_id(self, title):
+    if title in self.window_ids:
+      return self.window_ids[title]
+
+    res = subprocess.run(["xdotool", "search", "--name", title], capture_output=True, check=True)
+    wid = res.stdout.strip()
+    self.logger.debug("found window {} with wid={}, caching...".format(title, wid))
+    self.window_ids[title] = wid
+    return wid
+
+  def activate_window(self, title):
+    wid = self.find_window_id(title)
+    subprocess.run(["xdotool", "windowactivate", "--sync", wid], check=True)
+    self.logger.debug("activated window {}".format(title))
+
+  def activate_window_and_send_key(self, title, key):
+    self.activate_window(title)
+    subprocess.run(["xdotool", "key", "--clearmodifiers", key])
+    self.logger.debug("sent key {}".format(key))
+
+
+if __name__ == "__main__":
+  PresentationController.main()
