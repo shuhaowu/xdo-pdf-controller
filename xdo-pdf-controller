@@ -44,6 +44,7 @@ class PresentationController(Gtk.Window):
     self.window_ids = {}
 
     self.start = time.time()
+    self.last_slide_time = self.start
     self.slide_num = 1
     self.timer_id = None
 
@@ -70,7 +71,6 @@ class PresentationController(Gtk.Window):
     self.connect("key-press-event", self.on_key_pressed)
 
     self.reset_clock()
-    print("from#\tto#\ttime")
 
   def on_nav_buttons_clicked(self, widget):
     if widget == self.btn_next:
@@ -90,15 +90,16 @@ class PresentationController(Gtk.Window):
       self.navigate(1)
 
   def reset_clock(self):
-    self.logger.debug("resetting clock and slide num")
+    self.logger.debug("resetting clock")
     self.start = time.time()
-    self.slide_num = 1
+    self.last_slide_time = self.start
 
     if self.timer_id is not None: # Race condition? But whatever
       GLib.source_remove(self.timer_id)
       self.timer_id = None
 
     self.clock_tick()
+    print("from#\tto#\ttime\tsplit")
 
   def clock_tick(self):
     delta = round(time.time() - self.start)
@@ -126,13 +127,15 @@ class PresentationController(Gtk.Window):
       self.btn_prev.grab_focus()
 
     delta = str(datetime.timedelta(seconds=round(time.time() - self.start)))
-    print("{}\t{}\t{}".format(old_slide_num, self.slide_num, delta))
+    delta_split = str(datetime.timedelta(seconds=round(time.time() - self.last_slide_time)))
+    print("{}\t{}\t{}\t{}".format(old_slide_num, self.slide_num, delta, delta_split))
 
     for title in self.window_titles:
       self.logger.debug("sending key {} to window {}".format(key, title))
       self.activate_window_and_send_key(title, key)
 
     self.activate_window(self.title)
+    self.last_slide_time = time.time()
     self.clock_tick()
 
 
